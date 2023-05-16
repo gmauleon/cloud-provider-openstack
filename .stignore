@@ -1,0 +1,10 @@
+.git
+charts
+examples
+tools
+hack
+docs
+manifests
+
+# dlv binary
+__debug_bin

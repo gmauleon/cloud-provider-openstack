@@ -79,6 +79,14 @@ type IngPool struct {
 	PoolMembers []pools.BatchUpdateMemberOpts
 }
 
+type IngConfig struct {
+	TimeoutClientData    int
+	TimeoutMemberConnect int
+	TimeoutMemberData    int
+	TimeoutTCPInspect    int
+	AllowedCIDRs         []string
+}
+
 // ResourceTracker tracks the resources created for Ingress.
 type ResourceTracker struct {
 	client *gophercloud.ServiceClient
@@ -330,7 +338,7 @@ func (os *OpenStack) UpdateLoadBalancerDescription(lbID string, newDescription s
 }
 
 // EnsureListener creates a loadbalancer listener in octavia if it does not exist, wait for the loadbalancer to be ACTIVE.
-func (os *OpenStack) EnsureListener(name string, lbID string, secretRefs []string, listenerAllowedCIDRs []string) (*listeners.Listener, error) {
+func (os *OpenStack) EnsureListener(name string, lbID string, secretRefs []string, ingressConfig *IngConfig) (*listeners.Listener, error) {
 	listener, err := openstackutil.GetListenerByName(os.Octavia, name, lbID)
 	if err != nil {
 		if err != cpoerrors.ErrNotFound {
@@ -340,10 +348,14 @@ func (os *OpenStack) EnsureListener(name string, lbID string, secretRefs []strin
 		log.WithFields(log.Fields{"lbID": lbID, "listenerName": name}).Info("creating listener")
 
 		opts := listeners.CreateOpts{
-			Name:           name,
-			Protocol:       "HTTP",
-			ProtocolPort:   80, // Ingress Controller only supports http/https for now
-			LoadbalancerID: lbID,
+			Name:                 name,
+			Protocol:             "HTTP",
+			ProtocolPort:         80, // Ingress Controller only supports http/https for now
+			LoadbalancerID:       lbID,
+			TimeoutClientData:    &ingressConfig.TimeoutClientData,
+			TimeoutMemberConnect: &ingressConfig.TimeoutMemberConnect,
+			TimeoutMemberData:    &ingressConfig.TimeoutMemberData,
+			TimeoutTCPInspect:    &ingressConfig.TimeoutTCPInspect,
 		}
 		if len(secretRefs) > 0 {
 			opts.DefaultTlsContainerRef = secretRefs[0]
@@ -351,8 +363,8 @@ func (os *OpenStack) EnsureListener(name string, lbID string, secretRefs []strin
 			opts.ProtocolPort = 443
 			opts.Protocol = "TERMINATED_HTTPS"
 		}
-		if len(listenerAllowedCIDRs) > 0 {
-			opts.AllowedCIDRs = listenerAllowedCIDRs
+		if len(ingressConfig.AllowedCIDRs) > 0 {
+			opts.AllowedCIDRs = ingressConfig.AllowedCIDRs
 		}
 		listener, err = listeners.Create(os.Octavia, opts).Extract()
 		if err != nil {
@@ -361,15 +373,30 @@ func (os *OpenStack) EnsureListener(name string, lbID string, secretRefs []strin
 
 		log.WithFields(log.Fields{"lbID": lbID, "listenerName": name}).Info("listener created")
 	} else {
-		if len(listenerAllowedCIDRs) > 0 && !reflect.DeepEqual(listener.AllowedCIDRs, listenerAllowedCIDRs) {
-			_, err := listeners.Update(os.Octavia, listener.ID, listeners.UpdateOpts{
-				AllowedCIDRs: &listenerAllowedCIDRs,
-			}).Extract()
+
+		existingOpts := listeners.UpdateOpts{
+			TimeoutClientData:    &listener.TimeoutClientData,
+			TimeoutMemberConnect: &listener.TimeoutMemberConnect,
+			TimeoutMemberData:    &listener.TimeoutMemberData,
+			TimeoutTCPInspect:    &listener.TimeoutTCPInspect,
+			AllowedCIDRs:         &listener.AllowedCIDRs,
+		}
+
+		newOpts := listeners.UpdateOpts{
+			TimeoutClientData:    &ingressConfig.TimeoutClientData,
+			TimeoutMemberConnect: &ingressConfig.TimeoutMemberConnect,
+			TimeoutMemberData:    &ingressConfig.TimeoutMemberData,
+			TimeoutTCPInspect:    &ingressConfig.TimeoutTCPInspect,
+			AllowedCIDRs:         &ingressConfig.AllowedCIDRs,
+		}
+
+		if !reflect.DeepEqual(existingOpts, newOpts) {
+			_, err := listeners.Update(os.Octavia, listener.ID, newOpts).Extract()
 			if err != nil {
 				return nil, fmt.Errorf("failed to update listener allowed CIDRs: %v", err)
 			}
 
-			log.WithFields(log.Fields{"listenerID": listener.ID}).Debug("listener allowed CIDRs updated")
+			log.WithFields(log.Fields{"listenerID": listener.ID}).Debug("listener updated")
 		}
 	}
 

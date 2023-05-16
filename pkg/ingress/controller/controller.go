@@ -105,6 +105,18 @@ const (
 	// It should be a comma-separated list of CIDRs.
 	IngressAnnotationSourceRangesKey = "octavia.ingress.kubernetes.io/whitelist-source-range"
 
+	// Frontend client inactivity timeout in milliseconds for the load balancer.
+	IngressAnnotationTimeoutClientData = "octavia.ingress.kubernetes.io/timeout-client-data"
+
+	// Backend member connection timeout in milliseconds for the load balancer.
+	IngressAnnotationTimeoutMemberConnect = "octavia.ingress.kubernetes.io/timeout-member-connect"
+
+	// Backend member inactivity timeout in milliseconds for the load balancer.
+	IngressAnnotationTimeoutMemberData = "octavia.ingress.kubernetes.io/timeout-member-data"
+
+	// Time to wait for additional TCP packets for content inspection in milliseconds for the load balancer.
+	IngressAnnotationTimeoutTCPInspect = "octavia.ingress.kubernetes.io/timeout-tcp-inspect"
+
 	// IngressControllerTag is added to the related resources.
 	IngressControllerTag = "octavia.ingress.kubernetes.io"
 
@@ -727,9 +739,16 @@ func (c *Controller) ensureIngress(ing *nwv1.Ingress) error {
 	}
 
 	// Create listener
+	ingressConfig := openstack.IngConfig{}
+	ingressConfig.TimeoutClientData = getIntFromServiceAnnotation(ing, IngressAnnotationTimeoutClientData, 50000)
+	ingressConfig.TimeoutMemberConnect = getIntFromServiceAnnotation(ing, IngressAnnotationTimeoutMemberConnect, 5000)
+	ingressConfig.TimeoutMemberData = getIntFromServiceAnnotation(ing, IngressAnnotationTimeoutMemberData, 50000)
+	ingressConfig.TimeoutTCPInspect = getIntFromServiceAnnotation(ing, IngressAnnotationTimeoutTCPInspect, 0)
+
 	sourceRanges := getStringFromIngressAnnotation(ing, IngressAnnotationSourceRangesKey, "0.0.0.0/0")
-	listenerAllowedCIDRs := strings.Split(sourceRanges, ",")
-	listener, err := c.osClient.EnsureListener(resName, lb.ID, secretRefs, listenerAllowedCIDRs)
+	ingressConfig.AllowedCIDRs = strings.Split(sourceRanges, ",")
+
+	listener, err := c.osClient.EnsureListener(resName, lb.ID, secretRefs, &ingressConfig)
 	if err != nil {
 		return err
 	}
@@ -1010,11 +1029,34 @@ func (c *Controller) getServiceNodePort(name string, serviceBackend *nwv1.Ingres
 // getStringFromIngressAnnotation searches a given Ingress for a specific annotationKey and either returns the
 // annotation's value or a specified defaultSetting
 func getStringFromIngressAnnotation(ingress *nwv1.Ingress, annotationKey string, defaultValue string) string {
+	logger := log.WithFields(log.Fields{"annotation": annotationKey})
+
 	if annotationValue, ok := ingress.Annotations[annotationKey]; ok {
+
+		logger.Debugf("valid value found: %v", annotationValue)
 		return annotationValue
 	}
 
+	logger.Debugf("annotation not found; falling back to the default: %v", defaultValue)
 	return defaultValue
+}
+
+// getIntFromIngressAnnotation searches a given Ingress for a specific annotationKey and either returns the annotation's integer value or a specified defaultSetting
+func getIntFromServiceAnnotation(ingress *nwv1.Ingress, annotationKey string, defaultvalue int) int {
+	logger := log.WithFields(log.Fields{"annotation": annotationKey})
+
+	if annotationValue, ok := ingress.Annotations[annotationKey]; ok {
+		returnValue, err := strconv.Atoi(annotationValue)
+		if err != nil {
+			logger.Warningf("could not parse int value from %q, failing back to the default: %v, %v", annotationValue, defaultvalue, err)
+			return defaultvalue
+		}
+
+		logger.Debugf("valid value found: %v", annotationValue)
+		return returnValue
+	}
+	logger.Debugf("annotation not found; falling back to the default: %v", defaultvalue)
+	return defaultvalue
 }
 
 // privateKeyFromPEM converts a PEM block into a crypto.PrivateKey.
